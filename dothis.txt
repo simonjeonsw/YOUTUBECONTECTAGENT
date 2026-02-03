@@ -1,0 +1,8 @@
+🛠 Phase2 구현 우선순위 (이 순서 지켜) P
+hase2-1 (필수) memory_store.py channel_state 개념 도입 
+ranking → policy 기반 전환 
+Phase2-2 viewer_intent 활성화 (선택 관여) 
+evaluator를 “rule → signal”로 변경 Phase2-3 (고급) 
+실패 패턴 학습 반복 피로도 제어 “이번 주 전략” 같은 메타 목표 
+Phase2-1 디렉토리 & 코드 스캐폴딩 작성
+ 2️⃣ decision_engine.py 실제 코드 설계 3️⃣ viewer_intent의 구체적 역할 정의 (intent taxonomy)

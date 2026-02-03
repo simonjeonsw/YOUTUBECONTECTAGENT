@@ -1,5 +1,11 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+
 from context.context_anchor import create_context_snapshot
+from agent.decision_engine import DecisionEngine
+from memory.memory_store import MemoryStore
+from skills.viewer_intent import viewer_intent_score
+from skills.evaluator import eval_skill
+
 
 # --- Skill Interfaces (Injected later) ---
 
@@ -15,18 +21,22 @@ def script_skill(input_data: Dict[str, Any]) -> Dict[str, Any]:
     raise NotImplementedError
 
 
-def eval_skill(input_data: Dict[str, Any]) -> Dict[str, Any]:
-    raise NotImplementedError
-
-
 class MainAgent:
     """
-    High-level orchestration agent.
-    Owns flow control, retries, and final decisions.
+    Phase2-3 MainAgent
+    - Memory-aware
+    - DecisionEngine-driven
+    - Failure-learning enabled
     """
 
     def __init__(self, decision_policy: Dict[str, Any]):
         self.decision_policy = decision_policy
+        self.decision_engine = DecisionEngine(decision_policy)
+        self.memory = MemoryStore()
+
+    # =========================
+    # Public Entry
+    # =========================
 
     def run(self, user_goal: Dict[str, Any]) -> Dict[str, Any]:
         # 1. Research (optional)
@@ -41,60 +51,67 @@ class MainAgent:
         # 2. Click Thesis
         click_thesis = self._build_click_thesis(user_goal, research_result)
 
-        # 3. CTR + Eval retry loop
-        max_eval_retries = self.decision_policy.get("max_eval_retries", 2)
-        eval_attempts = 0
+        # 3. Generate CTR candidates
+        ctr_output = ctr_skill({
+            "click_thesis": click_thesis,
+            "research": research_result,
+        })
 
-        while eval_attempts < max_eval_retries:
-            ctr_candidates = self._generate_ctr_candidates(
-                click_thesis, research_result
+        # 4. Evaluate → build candidate objects
+        evaluated_candidates = self._build_evaluated_candidates(
+            ctr_output=ctr_output,
+            user_goal=user_goal,
+        )
+
+        if not evaluated_candidates:
+            self.memory.log_failure(
+                snapshot={"click_thesis": click_thesis},
+                reason="No candidates passed evaluation",
             )
-            selected = self._select_best_candidate(ctr_candidates)
+            return {
+                "status": "FAIL",
+                "reason": "No valid CTR candidates",
+            }
 
-            script_output = script_skill({
-                "click_thesis": click_thesis,
-                "top_title": selected["title"],
-                "top_hook": selected["hook"],
-                **(research_result or {}),
-            })
+        # 5. DecisionEngine selection (policy + memory + intent)
+        selected = self.decision_engine.select(
+            evaluated_candidates=evaluated_candidates,
+            channel_state=self.memory.get_channel_state(),
+        )
 
-            evaluation = eval_skill({
-                "click_thesis": click_thesis,
-                "hook": selected["hook"],
-                "title": selected["title"],
-                "thumbnail_text": selected["thumbnail_text"],
-                "script": script_output.get("full_script"),
-            })
+        # 6. Script
+        script_output = script_skill({
+            "click_thesis": click_thesis,
+            "top_hook": selected["hook"],
+            "top_title": selected["title"],
+            **(research_result or {}),
+        })
 
-            if evaluation.get("result") == "PASS":
-                snapshot = create_context_snapshot({
-                    "project_id": user_goal.get("project_id", "yt-agent"),
-                    "content_id": user_goal.get("content_id", "content-001"),
-                    "click_thesis": click_thesis,
-                    "selected_title": selected["title"],
-                    "selected_hook": selected["hook"],
-                    "selected_thumbnail_text": selected["thumbnail_text"],
-                })
+        # 7. Snapshot + Memory log
+        snapshot = create_context_snapshot({
+            "project_id": user_goal.get("project_id", "yt-agent"),
+            "content_id": user_goal.get("content_id", "content-001"),
+            "click_thesis": click_thesis,
+            "selected_title": selected["title"],
+            "selected_hook": selected["hook"],
+            "selected_thumbnail_text": selected["thumbnail_text"],
+        })
 
-                return {
-                    "status": "PASS",
-                    "output": {
-                        "click_thesis": click_thesis,
-                        **selected,
-                        "script": script_output.get("full_script"),
-                        "confidence": evaluation.get("confidence"),
-                        "context_snapshot": snapshot,
-                    }
-                }
-
-            eval_attempts += 1
+        self.memory.log_execution(snapshot)
 
         return {
-            "status": "FAIL",
-            "reason": "Evaluation failed after retries",
+            "status": "PASS",
+            "output": {
+                "click_thesis": click_thesis,
+                **selected,
+                "script": script_output.get("full_script"),
+                "context_snapshot": snapshot,
+            },
         }
 
-    # -------- Helpers --------
+    # =========================
+    # Internal helpers
+    # =========================
 
     def _build_click_thesis(
         self,
@@ -113,23 +130,47 @@ class MainAgent:
         )
 
         if thesis.count(".") != 1:
-            raise ValueError("ClickThesis must be one sentence.")
+            raise ValueError("ClickThesis must be exactly one sentence.")
 
         return thesis
 
-    def _generate_ctr_candidates(
+    def _build_evaluated_candidates(
         self,
-        click_thesis: str,
-        research_result: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        return ctr_skill({
-            "click_thesis": click_thesis,
-            "research": research_result,
-        })
+        ctr_output: Dict[str, Any],
+        user_goal: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Converts raw CTR output into DecisionEngine-ready items.
+        """
 
-    def _select_best_candidate(self, ctr_output: Dict[str, Any]) -> Dict[str, str]:
-        return {
-            "hook": max(ctr_output["hooks"], key=len),
-            "title": ctr_output["titles"][0],
-            "thumbnail_text": min(ctr_output["thumbnail_texts"], key=len),
-        }
+        candidates = []
+
+        for hook, title, thumbnail in zip(
+            ctr_output.get("hooks", []),
+            ctr_output.get("titles", []),
+            ctr_output.get("thumbnail_texts", []),
+        ):
+            evaluation = eval_skill({
+                "hook": hook,
+                "title": title,
+                "thumbnail_text": thumbnail,
+            })
+
+            if evaluation.get("result") != "PASS":
+                continue
+
+            candidates.append({
+                "candidate": {
+                    "hook": hook,
+                    "title": title,
+                    "thumbnail_text": thumbnail,
+                },
+                "evaluation": evaluation,
+                "intent_score": viewer_intent_score(user_goal),
+                "fatigue_penalty": self.memory.fatigue_penalty({
+                    "hook": hook,
+                    "title": title,
+                }),
+            })
+
+        return candidates

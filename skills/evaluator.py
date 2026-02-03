@@ -1,6 +1,6 @@
 # /skills/evaluator.py
 
-from typing import Dict, List
+from typing import Dict
 
 
 EMOTION_WORDS = [
@@ -9,49 +9,41 @@ EMOTION_WORDS = [
 ]
 
 
-def contains_emotion(text: str) -> bool:
+def _emotion_score(text: str) -> float:
     text = text.lower()
-    return any(word in text for word in EMOTION_WORDS)
+    return sum(1 for w in EMOTION_WORDS if w in text) / len(EMOTION_WORDS)
 
 
-def eval_hook(hook: str) -> bool:
-    if len(hook.split()) < 6:
-        return False
-    if not contains_emotion(hook):
-        return False
-    if "but" not in hook and "why" not in hook:
-        return False
-    return True
+def _clarity_score(text: str) -> float:
+    words = len(text.split())
+    if words == 0:
+        return 0.0
+    return max(0.0, 1.0 - abs(words - 8) / 8)
 
 
-def eval_title(title: str) -> bool:
-    if len(title) > 70:
-        return False
-    if not contains_emotion(title):
-        return False
-    if "about" in title and "why" not in title:
-        return False
-    return True
+def _novelty_score(text: str) -> float:
+    text = text.lower()
+    return 1.0 if ("but" in text or "why" in text) else 0.4
 
 
-def eval_thumbnail(text: str) -> bool:
-    if len(text.split()) > 4:
-        return False
-    if not contains_emotion(text):
-        return False
-    return True
-
-
-def eval_skill(input_data: Dict[str, List[str]]) -> Dict[str, List[str]]:
+def eval_skill(input_data: Dict[str, str]) -> Dict[str, Dict[str, float]]:
     """
-    Filters CTR candidates and returns only high-quality options.
-    Does not make final decisions.
+    Phase2-2:
+    - No filtering
+    - No PASS / FAIL
+    - Only returns evaluation signals
     """
+
+    hook = input_data.get("hook", "")
+    title = input_data.get("title", "")
+    thumbnail = input_data.get("thumbnail_text", "")
+
+    combined = f"{hook} {title} {thumbnail}"
 
     return {
-        "hooks": [h for h in input_data["hooks"] if eval_hook(h)],
-        "titles": [t for t in input_data["titles"] if eval_title(t)],
-        "thumbnail_texts": [
-            t for t in input_data["thumbnail_texts"] if eval_thumbnail(t)
-        ]
+        "signals": {
+            "emotion": _emotion_score(combined),
+            "clarity": _clarity_score(title),
+            "novelty": _novelty_score(hook),
+        }
     }
