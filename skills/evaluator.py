@@ -1,4 +1,4 @@
-# skills/evaluator.py
+# /skills/evaluator.py
 
 from typing import Dict, List
 
@@ -44,15 +44,14 @@ def eval_thumbnail(text: str) -> bool:
 
 def eval_skill(input_data: Dict[str, List[str]]) -> Dict[str, List[str]]:
     """
-    Filters CTR candidates and returns only high-quality outputs.
+    Filters CTR candidates and returns only high-quality options.
+    Does not make final decisions.
     """
 
-    hooks = [h for h in input_data["hooks"] if eval_hook(h)]
-    titles = [t for t in input_data["titles"] if eval_title(t)]
-    thumbnails = [t for t in input_data["thumbnail_texts"] if eval_thumbnail(t)]
-
     return {
-        "hooks": hooks,
-        "titles": titles,
-        "thumbnail_texts": thumbnails
+        "hooks": [h for h in input_data["hooks"] if eval_hook(h)],
+        "titles": [t for t in input_data["titles"] if eval_title(t)],
+        "thumbnail_texts": [
+            t for t in input_data["thumbnail_texts"] if eval_thumbnail(t)
+        ]
     }

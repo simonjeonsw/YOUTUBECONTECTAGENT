@@ -1,4 +1,4 @@
-# core/skills/script_skill.py
+# /skills/script_skill.py
 
 from typing import Dict, Any
 
@@ -8,28 +8,29 @@ def script_skill(input_data: Dict[str, Any]) -> Dict[str, str]:
     Generates a structured video script optimized for retention.
     """
 
-    click_thesis = input_data["click_thesis"]
-    top_hook = input_data["top_hook"]
-    top_title = input_data["top_title"]
-    supporting_fact = input_data["supporting_fact"]
-    credibility_boost = input_data["credibility_boost"]
-    context_note = input_data["context_note"]
+    click_thesis: str = input_data["click_thesis"]
+    top_hook: str = input_data["top_hook"]
+    top_title: str = input_data["top_title"]
+
+    supporting_fact: str = input_data["supporting_fact"]
+    credibility_boost: str = input_data["credibility_boost"]
+    context_note: str = input_data["context_note"]
 
     opening = (
         f"{top_hook} "
-        "And once you see it, you can't unsee it."
+        "And once you notice it, you can’t unsee it."
     )
 
     body = (
-        f"Most people assume this is harmless. "
+        "Most people assume this is harmless. "
         f"But {supporting_fact} "
         f"{credibility_boost} "
         f"{context_note}"
     )
 
     payoff = (
-        "So the real question is not whether this exists, "
-        "but how often it's quietly shaping your decisions without you noticing."
+        "So the real question isn’t whether this exists, "
+        "but how often it quietly shapes your decisions without you realizing it."
     )
 
     full_script = (

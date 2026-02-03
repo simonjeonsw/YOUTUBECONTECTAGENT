@@ -1,8 +1,7 @@
-# agent/main_agent.py
-
 from typing import Dict, Any, Optional
+from context.context_anchor import create_context_snapshot
 
-# --- Skill Interfaces (to be implemented separately) ---
+# --- Skill Interfaces (Injected later) ---
 
 def research_skill(input_data: Dict[str, Any]) -> Dict[str, Any]:
     raise NotImplementedError
@@ -20,150 +19,117 @@ def eval_skill(input_data: Dict[str, Any]) -> Dict[str, Any]:
     raise NotImplementedError
 
 
-# --- Main Agent ---
-
 class MainAgent:
-    def __init__(self, decision_policy: Dict[str, Any]):
-        self.policy = decision_policy
+    """
+    High-level orchestration agent.
+    Owns flow control, retries, and final decisions.
+    """
 
-    # -------- Core Flow --------
+    def __init__(self, decision_policy: Dict[str, Any]):
+        self.decision_policy = decision_policy
 
     def run(self, user_goal: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Orchestrates the full pipeline:
-        Research → ClickThesis → CTR → Script → Eval → Retry
-        """
-
         # 1. Research (optional)
-        research = None
-        if self._should_run_research(user_goal):
-            research = research_skill({
+        research_result = None
+        if not user_goal.get("framing_clear", False):
+            research_result = research_skill({
                 "topic": user_goal.get("topic"),
                 "target_audience": user_goal.get("target_audience"),
-                "constraints": user_goal.get("constraints")
+                "constraints": user_goal.get("constraints"),
             })
 
         # 2. Click Thesis
-        click_thesis = self._generate_click_thesis(user_goal, research)
+        click_thesis = self._build_click_thesis(user_goal, research_result)
 
-        # 3. CTR Loop
-        ctr_output = self._run_ctr_with_retry(click_thesis, research)
+        # 3. CTR + Eval retry loop
+        max_eval_retries = self.decision_policy.get("max_eval_retries", 2)
+        eval_attempts = 0
 
-        # 4. Select strongest candidates (simple heuristic v1)
-        selected = self._select_best_ctr_candidate(ctr_output)
+        while eval_attempts < max_eval_retries:
+            ctr_candidates = self._generate_ctr_candidates(
+                click_thesis, research_result
+            )
+            selected = self._select_best_candidate(ctr_candidates)
 
-        # 5. Script
-        script = script_skill({
-            "selected_hook": selected["hook"],
-            "selected_title": selected["title"],
-            "click_thesis": click_thesis
-        })
+            script_output = script_skill({
+                "click_thesis": click_thesis,
+                "top_title": selected["title"],
+                "top_hook": selected["hook"],
+                **(research_result or {}),
+            })
 
-        # 6. Final Eval
-        evaluation = eval_skill({
-            "click_thesis": click_thesis,
-            "hook": selected["hook"],
-            "title": selected["title"],
-            "thumbnail_text": selected["thumbnail_text"],
-            "script": script["script"]
-        })
-
-        if evaluation["result"] == "FAIL":
-            return {
-                "status": "FAIL",
-                "reason": evaluation["failure_reason"],
-                "best_attempt": {
-                    "click_thesis": click_thesis,
-                    "hook": selected["hook"],
-                    "title": selected["title"],
-                    "thumbnail_text": selected["thumbnail_text"],
-                    "script": script["script"]
-                }
-            }
-
-        return {
-            "status": "PASS",
-            "output": {
+            evaluation = eval_skill({
                 "click_thesis": click_thesis,
                 "hook": selected["hook"],
                 "title": selected["title"],
                 "thumbnail_text": selected["thumbnail_text"],
-                "script": script["script"],
-                "confidence": evaluation["confidence"]
-            }
+                "script": script_output.get("full_script"),
+            })
+
+            if evaluation.get("result") == "PASS":
+                snapshot = create_context_snapshot({
+                    "project_id": user_goal.get("project_id", "yt-agent"),
+                    "content_id": user_goal.get("content_id", "content-001"),
+                    "click_thesis": click_thesis,
+                    "selected_title": selected["title"],
+                    "selected_hook": selected["hook"],
+                    "selected_thumbnail_text": selected["thumbnail_text"],
+                })
+
+                return {
+                    "status": "PASS",
+                    "output": {
+                        "click_thesis": click_thesis,
+                        **selected,
+                        "script": script_output.get("full_script"),
+                        "confidence": evaluation.get("confidence"),
+                        "context_snapshot": snapshot,
+                    }
+                }
+
+            eval_attempts += 1
+
+        return {
+            "status": "FAIL",
+            "reason": "Evaluation failed after retries",
         }
 
-    # -------- Decision Logic --------
+    # -------- Helpers --------
 
-    def _should_run_research(self, user_goal: Dict[str, Any]) -> bool:
-        return not user_goal.get("framing_clear", False)
-
-    def _generate_click_thesis(
+    def _build_click_thesis(
         self,
         user_goal: Dict[str, Any],
-        research: Optional[Dict[str, Any]]
+        research_result: Optional[Dict[str, Any]],
     ) -> str:
-        """
-        ClickThesis is a logical artifact.
-        For now, generated inline (later can be its own Skill).
-        """
-
         topic = user_goal.get("topic", "")
         pain = ""
-        if research:
-            pain = research.get("audience_pain", [""])[0]
+
+        if research_result:
+            pain = research_result.get("audience_pain", [""])[0]
 
         thesis = (
             f"Most people think {topic} is harmless, "
-            f"but this video shows why it quietly causes {pain}."
+            f"but it quietly leads to {pain}."
         )
 
-        # Basic validation
         if thesis.count(".") != 1:
-            raise ValueError("Invalid ClickThesis: must be single sentence")
+            raise ValueError("ClickThesis must be one sentence.")
 
         return thesis
 
-    def _run_ctr_with_retry(
+    def _generate_ctr_candidates(
         self,
         click_thesis: str,
-        research: Optional[Dict[str, Any]]
+        research_result: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        retries = 0
+        return ctr_skill({
+            "click_thesis": click_thesis,
+            "research": research_result,
+        })
 
-        while retries < self.policy.get("max_ctr_retries", 3):
-            ctr_output = ctr_skill({
-                "click_thesis": click_thesis,
-                "research": research
-            })
-
-            if self._is_ctr_output_valid(ctr_output):
-                return ctr_output
-
-            retries += 1
-
-        raise RuntimeError("CTRSkill failed after max retries")
-
-    def _is_ctr_output_valid(self, ctr_output: Dict[str, Any]) -> bool:
-        return (
-            len(ctr_output.get("hooks", [])) >= 5 and
-            len(ctr_output.get("titles", [])) >= 5 and
-            len(ctr_output.get("thumbnail_texts", [])) >= 5
-        )
-
-    def _select_best_ctr_candidate(self, ctr_output: Dict[str, Any]) -> Dict[str, str]:
-        """
-        v1 heuristic:
-        - shortest thumbnail
-        - most provocative hook (length-based proxy)
-        """
-
-        hook = sorted(ctr_output["hooks"], key=len, reverse=True)[0]
-        title = ctr_output["titles"][0]
-        thumbnail = sorted(ctr_output["thumbnail_texts"], key=len)[0]
-
+    def _select_best_candidate(self, ctr_output: Dict[str, Any]) -> Dict[str, str]:
         return {
-            "hook": hook,
-            "title": title,
-            "thumbnail_text": thumbnail
+            "hook": max(ctr_output["hooks"], key=len),
+            "title": ctr_output["titles"][0],
+            "thumbnail_text": min(ctr_output["thumbnail_texts"], key=len),
         }
