@@ -1,4 +1,4 @@
-# core/skills/evaluator.py
+# skills/evaluator.py
 
 from typing import Dict, List
 
